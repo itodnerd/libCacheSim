@@ -6,6 +6,7 @@
 [![GitHub version](https://badge.fury.io/gh/1a1a11a%2FlibCasheSim.svg)](https://badge.fury.io/gh/1a1a11a%2FlibCasheSim)
 ![visitors](https://visitor-badge.glitch.me/badge?page_id=1a1a11a.libCacheSim)
 
+**We will release a new version soon with new features, if you are interested to try out, please join https://groups.google.com/g/libcachesim**
 
 ### What is libCacheSim
 * a high-performance library for building cache simulators. 
