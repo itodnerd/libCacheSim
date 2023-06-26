@@ -3,176 +3,439 @@
 //
 
 #include "../include/libCacheSim/cache.h"
+
 #include "../dataStructure/hashtable/hashtable.h"
 
-static void *_get_func_handle(char *func_name, const char *const cache_name,
-                              bool must_have, bool internal_func) {
-  static void *handle = NULL;
-  if (handle == NULL) {
-    handle = dlopen(NULL, RTLD_GLOBAL);
-    /* should not check err here, otherwise ubuntu will report err even though
-     * everything is OK
-    char *err = dlerror();
-    if (err != NULL){
-      ERROR("error dlopen main program %s\n", err);
-      abort();
-    }
-     */
-  }
+/** this file contains both base function, which should be called by all
+ *eviction algorithms, and the queue related functions, which should be called
+ *by algorithm that uses only one queue and needs to update the queue such as
+ *LRU and FIFO
+ **/
 
-  char full_func_name[128];
-  if (internal_func)
-    sprintf(full_func_name, "_%s_%s", cache_name, func_name);
-  else
-    sprintf(full_func_name, "%s_%s", cache_name, func_name);
-
-  void *func_ptr = dlsym(handle, full_func_name);
-
-  if (must_have && func_ptr == NULL) {
-    ERROR("unable to find %s error %s\n", full_func_name, dlerror());
-    abort();
-  }
-  return func_ptr;
-}
-
+/**
+ * @brief this function is called by all eviction algorithms to initialize the
+ * cache
+ *
+ * @param ccache_params common cache parameters
+ * @param init_params eviction algorithm specific parameters
+ * @return cache_t* pointer to the cache
+ */
 cache_t *cache_struct_init(const char *const cache_name,
-                           common_cache_params_t params) {
+                           const common_cache_params_t params,
+                           const void *const init_params) {
   cache_t *cache = my_malloc(cache_t);
   memset(cache, 0, sizeof(cache_t));
-  strncpy(cache->cache_name, cache_name, 31);
+  strncpy(cache->cache_name, cache_name, CACHE_NAME_ARRAY_LEN);
+
+  if (init_params != NULL) {
+    strncpy(cache->init_params, init_params, CACHE_INIT_PARAMS_LEN);
+  }
   cache->cache_size = params.cache_size;
-  cache->cache_params = NULL;
+  cache->eviction_params = NULL;
+  cache->admissioner = NULL;
+  cache->future_stack_dist = NULL;
+  cache->future_stack_dist_array_size = 0;
   cache->default_ttl = params.default_ttl;
+  cache->n_req = 0;
+  cache->to_evict_candidate = NULL;
+  cache->to_evict_candidate_gen_vtime = -1;
+
+  cache->can_insert = cache_can_insert_default;
+  cache->get_occupied_byte = cache_get_occupied_byte_default;
+  cache->get_n_obj = cache_get_n_obj_default;
+
+  /* this option works only when eviction age tracking
+   * is on in config.h */
+#if defined(TRACK_EVICTION_V_AGE)
+  cache->track_eviction_age = true;
+#endif
+#if defined(TRACK_DEMOTION)
+  cache->track_demotion = true;
+#endif
+
   int hash_power = HASH_POWER_DEFAULT;
   if (params.hashpower > 0 && params.hashpower < 40)
     hash_power = params.hashpower;
   cache->hashtable = create_hashtable(hash_power);
-  hashtable_add_ptr_to_monitoring(cache->hashtable, &cache->list_head);
-  hashtable_add_ptr_to_monitoring(cache->hashtable, &cache->list_tail);
-
-  cache->cache_init =
-      (cache_init_func_ptr) _get_func_handle("init", cache_name, true, false);
-  cache->cache_free =
-      (cache_free_func_ptr) _get_func_handle("free", cache_name, true, false);
-  cache->get =
-      (cache_get_func_ptr) _get_func_handle("get", cache_name, true, false);
-  cache->check =
-      (cache_check_func_ptr) _get_func_handle("check", cache_name, true, false);
-  cache->insert =
-      (cache_insert_func_ptr) _get_func_handle("insert", cache_name, true, false);
-  cache->evict =
-      (cache_evict_func_ptr) _get_func_handle("evict", cache_name, true, false);
-//  cache->remove_obj = (cache_remove_obj_func_ptr) _get_func_handle(
-//      "remove_obj", cache_name, false, false);
-  cache->remove = (cache_remove_func_ptr) _get_func_handle("remove", cache_name, false, false);
+  hashtable_add_ptr_to_monitoring(cache->hashtable, &cache->q_head);
+  hashtable_add_ptr_to_monitoring(cache->hashtable, &cache->q_tail);
 
   return cache;
 }
 
+/**
+ * @brief this function is called by all eviction algorithms to free the cache
+ *
+ * @param cache
+ */
 void cache_struct_free(cache_t *cache) {
   free_hashtable(cache->hashtable);
+  if (cache->admissioner != NULL) cache->admissioner->free(cache->admissioner);
   my_free(sizeof(cache_t), cache);
 }
 
-cache_t *create_cache_with_new_size(cache_t *old_cache, gint64 new_size) {
-  common_cache_params_t cc_params = {.cache_size = new_size,
-                                     .hashpower = old_cache->hashtable->hashpower,
-                                     .default_ttl = old_cache->default_ttl};
+/**
+ * @brief this function is called by all eviction algorithms to clone old cache
+ * with new size
+ *
+ * @param old_cache
+ * @param new_size
+ * @return cache_t* pointer to the new cache
+ */
+cache_t *create_cache_with_new_size(const cache_t *old_cache,
+                                    uint64_t new_size) {
+  common_cache_params_t cc_params = {
+      .cache_size = new_size,
+      .hashpower = old_cache->hashtable->hashpower,
+      .default_ttl = old_cache->default_ttl,
+      .consider_obj_metadata = old_cache->obj_md_size == 0 ? false : true,
+  };
+  assert(sizeof(cc_params) == 24);
   cache_t *cache = old_cache->cache_init(cc_params, old_cache->init_params);
+  if (old_cache->admissioner != NULL) {
+    cache->admissioner = old_cache->admissioner->clone(old_cache->admissioner);
+  }
+  cache->future_stack_dist = old_cache->future_stack_dist;
+  cache->future_stack_dist_array_size = old_cache->future_stack_dist_array_size;
   return cache;
 }
 
-cache_ck_res_e cache_check(cache_t *cache, request_t *req, bool update_cache,
-                           cache_obj_t **cache_obj_ret) {
+/**
+ * @brief whether the request can be inserted into cache
+ *
+ * @param cache
+ * @param req
+ * @return true
+ * @return false
+ */
+bool cache_can_insert_default(cache_t *cache, const request_t *req) {
+  if (cache->admissioner != NULL) {
+    admissioner_t *admissioner = cache->admissioner;
+    if (admissioner->admit(admissioner, req) == false) {
+      DEBUG_ONCE(
+          "admission algorithm does not admit: req %ld, obj %lu, size %lu\n",
+          cache->n_req, (unsigned long)req->obj_id,
+          (unsigned long)req->obj_size);
+      return false;
+    }
+  }
+
+  if (req->obj_size + cache->obj_md_size > cache->cache_size) {
+    WARN_ONCE("%ld req, obj %lu, size %lu larger than cache size %lu\n",
+              cache->n_req, (unsigned long)req->obj_id,
+              (unsigned long)req->obj_size, (unsigned long)cache->cache_size);
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * @brief this function is called by eviction algorithms that use
+ * the hash table to find whether an object is in the cache
+ *
+ * @param cache
+ * @param req
+ * @param update_cache whether to update the cache,
+ *  if true, the number of requests increases by 1,
+ *  the object size will be updated,
+ *  and if the object is expired, it is removed from the cache
+ * @return the found cache_obj_t* or NULL if not found
+ */
+cache_obj_t *cache_find_base(cache_t *cache, const request_t *req,
+                             const bool update_cache) {
   cache_obj_t *cache_obj = hashtable_find(cache->hashtable, req);
-  if (cache_obj_ret != NULL)
-    *cache_obj_ret = cache_obj;
-  if (cache_obj == NULL) {
-    return cache_ck_miss;
-  }
 
-  cache_ck_res_e ret = cache_ck_hit;
+  if (cache_obj != NULL) {
 #ifdef SUPPORT_TTL
-  if (cache->default_ttl != 0) {
-    if (cache_obj->exp_time < req->real_time) {
-      ret = cache_ck_expired;
-      if (likely(update_cache))
-        cache_obj->exp_time =
-            req->real_time + (req->ttl != 0 ? req->ttl : cache->default_ttl);
+    if (cache_obj->exp_time != 0 && cache_obj->exp_time < req->clock_time) {
+      if (update_cache) {
+        cache->remove(cache, cache_obj->obj_id);
+      }
+
+      cache_obj = NULL;
+    }
+#endif
+
+    if (update_cache) {
+      cache_obj->misc.next_access_vtime = req->next_access_vtime;
+      cache_obj->misc.freq += 1;
     }
   }
-#endif
-  if (likely(update_cache)) {
-    if (unlikely(cache_obj->obj_size != req->obj_size)) {
-      cache->occupied_size -= cache_obj->obj_size;
-      cache->occupied_size += req->obj_size;
-      cache_obj->obj_size = req->obj_size;
-    }
-  }
-  return ret;
-}
 
-cache_ck_res_e cache_get(cache_t *cache, request_t *req) {
-  VVVERBOSE("req %" PRIu64 ", obj %" PRIu64 ", obj_size %" PRIu32
-            ", cache size %" PRIu64 "/%" PRIu64 "\n",
-            cache->req_cnt, req->obj_id_int, req->obj_size,
-            cache->occupied_size, cache->cache_size);
-
-  cache_ck_res_e cache_check = cache->check(cache, req, true);
-  if (req->obj_size <= cache->cache_size) {
-    if (cache_check == cache_ck_miss)
-      cache->insert(cache, req);
-
-    while (cache->occupied_size > cache->cache_size)
-      cache->evict(cache, req, NULL);
-  } else {
-    WARNING("req %lld: obj size %ld larger than cache size %ld\n",
-            (long long) cache->req_cnt, (long) req->obj_size,
-            (long) cache->cache_size);
-  }
-  cache->req_cnt += 1;
-  return cache_check;
-}
-
-cache_obj_t *cache_insert_LRU(cache_t *cache, request_t *req) {
-#ifdef SUPPORT_TTL
-  if (cache->default_ttl != 0 && req->ttl == 0) {
-    req->ttl = cache->default_ttl;
-  }
-#endif
-  cache->occupied_size += req->obj_size;
-  cache_obj_t *cache_obj = hashtable_insert(cache->hashtable, req);
-  if (unlikely(cache->list_head == NULL)) {
-    // an empty list, this is the first insert
-    cache->list_head = cache_obj;
-    cache->list_tail = cache_obj;
-  } else {
-    cache->list_tail->list_next = cache_obj;
-    cache_obj->list_prev = cache->list_tail;
-  }
-  cache->list_tail = cache_obj;
   return cache_obj;
 }
 
-void cache_evict_LRU(cache_t *cache, request_t *req, cache_obj_t *evicted_obj) {
-  // currently not handle the case when all objects are evicted
-  cache_obj_t *obj_to_evict = cache->list_head;
-  if (evicted_obj != NULL) {
-    // return evicted object to caller
-    memcpy(evicted_obj, obj_to_evict, sizeof(cache_obj_t));
+/**
+ * @brief this function is called by all eviction algorithms
+ * it performs the following logic
+ *
+ * ```
+ * if obj in cache:
+ *    update_metadata
+ *    return true
+ * else:
+ *    if cache does not have enough space:
+ *        evict until it has space to insert
+ *    insert the object
+ *    return false
+ * ```
+ *
+ * @param cache
+ * @param req
+ * @return true if cache hit, false if cache miss
+ */
+bool cache_get_base(cache_t *cache, const request_t *req) {
+  cache->n_req += 1;
+
+  VERBOSE("******* %s req %ld, obj %ld, obj_size %ld, cache size %ld/%ld\n",
+          cache->cache_name, cache->n_req, req->obj_id, req->obj_size,
+          cache->get_occupied_byte(cache), cache->cache_size);
+
+  cache_obj_t *obj = cache->find(cache, req, true);
+
+  if (obj != NULL) {
+    VVERBOSE("req %ld, obj %ld --- cache hit\n", cache->n_req, req->obj_id);
+    return true;
   }
-  DEBUG_ASSERT(cache->list_head != cache->list_head->list_next);
-  cache->list_head = cache->list_head->list_next;
-  cache->list_head->list_prev = NULL;
-  DEBUG_ASSERT(cache->occupied_size >= obj_to_evict->obj_size);
-  cache->occupied_size -= obj_to_evict->obj_size;
-  hashtable_delete(cache->hashtable, obj_to_evict);
-  DEBUG_ASSERT(cache->list_head != cache->list_head->list_next);
-  /** obj_to_evict is not freed or returned to hashtable, if you have
- * extra_metadata allocated with obj_to_evict, you need to free them now,
- * otherwise, there will be memory leakage **/
+
+  if (cache->can_insert(cache, req) == false) {
+    VVERBOSE("req %ld, obj %ld --- cache miss cannot insert\n", cache->n_req,
+             req->obj_id);
+    return false;
+  }
+
+  while (cache->get_occupied_byte(cache) + req->obj_size + cache->obj_md_size >
+         cache->cache_size) {
+    cache->evict(cache, req);
+  }
+
+  cache->insert(cache, req);
+
+  return false;
 }
 
-cache_obj_t *cache_get_obj(cache_t *cache, request_t *req) {
-  return hashtable_find(cache->hashtable, req);
+/**
+ * @brief this function is called by all caches to
+ * insert an object into the cache, update the hash table and cache metadata
+ * this function assumes the cache has enough space
+ * and eviction is not part of this function
+ *
+ * @param cache
+ * @param req
+ * @return the inserted object
+ */
+cache_obj_t *cache_insert_base(cache_t *cache, const request_t *req) {
+  cache_obj_t *cache_obj = hashtable_insert(cache->hashtable, req);
+  cache->occupied_byte +=
+      (int64_t)cache_obj->obj_size + (int64_t)cache->obj_md_size;
+  cache->n_obj += 1;
+
+#ifdef SUPPORT_TTL
+  if (cache->default_ttl != 0 && req->ttl == 0) {
+    cache_obj->exp_time = (int32_t)cache->default_ttl + req->clock_time;
+  }
+#endif
+
+#if defined(TRACK_EVICTION_V_AGE) || \
+    defined(TRACK_DEMOTION) || defined(TRACK_CREATE_TIME)
+  cache_obj->create_time = CURR_TIME(cache, req);
+#endif
+
+  cache_obj->misc.next_access_vtime = req->next_access_vtime;
+  cache_obj->misc.freq = 0;
+
+  return cache_obj;
+}
+
+/**
+ * @brief this function is called by all eviction algorithms in the eviction
+ * function, it updates the cache metadata. Because it frees the object struct,
+ * it needs to be called at the end of the eviction function.
+ *
+ * @param cache the cache
+ * @param obj the object to be removed
+ */
+void cache_evict_base(cache_t *cache, cache_obj_t *obj,
+                      bool remove_from_hashtable) {
+#if defined(TRACK_EVICTION_V_AGE)
+  if (cache->track_eviction_age) {
+    record_eviction_age(cache, obj, CURR_TIME(cache, req) - obj->create_time);
+  }
+#endif
+  cache_remove_obj_base(cache, obj, remove_from_hashtable);
+}
+
+/**
+ * @brief this function is called by all eviction algorithms that
+ * need to remove an object from the cache, it updates the cache metadata,
+ * because it frees the object struct, it needs to be called at the end of
+ * the eviction function.
+ *
+ * @param cache the cache
+ * @param obj the object to be removed
+ */
+void cache_remove_obj_base(cache_t *cache, cache_obj_t *obj,
+                           bool remove_from_hashtable) {
+  DEBUG_ASSERT(cache->occupied_byte >= obj->obj_size + cache->obj_md_size);
+  cache->occupied_byte -= (obj->obj_size + cache->obj_md_size);
+  cache->n_obj -= 1;
+  if (remove_from_hashtable) {
+    hashtable_delete(cache->hashtable, obj);
+  }
+}
+
+/**
+ * @brief print the recorded eviction age
+ *
+ * @param cache
+ */
+void print_log2_eviction_age(const cache_t *cache) {
+  printf("eviction age %d:%ld, ", 1, (long)cache->log_eviction_age_cnt[0]);
+  for (int i = 1; i < EVICTION_AGE_ARRAY_SZE; i++) {
+    if (cache->log_eviction_age_cnt[i] > 1000000)
+      printf("%lu:%.1lfm, ", 1lu << i,
+             (double)cache->log_eviction_age_cnt[i] / 1000000.0);
+    else if (cache->log_eviction_age_cnt[i] > 1000)
+      printf("%lu:%.1lfk, ", 1lu << i,
+             (double)cache->log_eviction_age_cnt[i] / 1000.0);
+    else if (cache->log_eviction_age_cnt[i] > 0)
+      printf("%lu:%ld, ", 1lu << i, (long)cache->log_eviction_age_cnt[i]);
+  }
+  printf("\n");
+}
+
+/**
+ * @brief print the recorded eviction age
+ *
+ * @param cache
+ */
+void print_eviction_age(const cache_t *cache) {
+  printf("eviction age %d:%ld, ", 1, (long)cache->log_eviction_age_cnt[0]);
+  for (int i = 1; i < EVICTION_AGE_ARRAY_SZE; i++) {
+    if (cache->log_eviction_age_cnt[i] > 1000000)
+      printf("%lld:%.1lfm, ", (long long)(pow(EVICTION_AGE_LOG_BASE, i)),
+             (double)cache->log_eviction_age_cnt[i] / 1000000.0);
+    else if (cache->log_eviction_age_cnt[i] > 1000)
+      printf("%lld:%.1lfk, ", (long long)(pow(EVICTION_AGE_LOG_BASE, i)),
+             (double)cache->log_eviction_age_cnt[i] / 1000.0);
+    else if (cache->log_eviction_age_cnt[i] > 0)
+      printf("%lld:%ld, ", (long long)(pow(EVICTION_AGE_LOG_BASE, i)),
+             (long)cache->log_eviction_age_cnt[i]);
+  }
+  printf("\n");
+}
+
+/**
+ * @brief dump the eviction age distribution to a file
+ *
+ * @param cache
+ * @param ofilepath
+ * @return true
+ * @return false
+ */
+bool dump_log2_eviction_age(const cache_t *cache, const char *ofilepath) {
+  FILE *ofile = fopen(ofilepath, "a");
+  if (ofile == NULL) {
+    perror("fopen failed");
+    return false;
+  }
+
+  fprintf(ofile, "%s, cache size: %lu, ", cache->cache_name,
+          (unsigned long)cache->cache_size);
+  fprintf(ofile, "%d:%ld, ", 1, (long)cache->log_eviction_age_cnt[0]);
+  for (int i = 1; i < EVICTION_AGE_ARRAY_SZE; i++) {
+    if (cache->log_eviction_age_cnt[i] == 0) {
+      continue;
+    }
+    fprintf(ofile, "%lu:%ld, ", 1lu << i, (long)cache->log_eviction_age_cnt[i]);
+  }
+  fprintf(ofile, "\n\n");
+
+  fclose(ofile);
+  return true;
+}
+
+/**
+ * @brief dump the eviction age distribution to a file
+ *
+ * @param cache
+ * @param ofilepath
+ * @return true
+ * @return false
+ */
+bool dump_eviction_age(const cache_t *cache, const char *ofilepath) {
+  FILE *ofile = fopen(ofilepath, "a");
+  if (ofile == NULL) {
+    perror("fopen failed");
+    return false;
+  }
+
+  /* dump the objects' ages at eviction */
+  fprintf(ofile, "%s, eviction age, cache size: %lu, ", cache->cache_name,
+          (unsigned long)cache->cache_size);
+  for (int i = 0; i < EVICTION_AGE_ARRAY_SZE; i++) {
+    if (cache->log_eviction_age_cnt[i] == 0) {
+      continue;
+    }
+    fprintf(ofile, "%lld:%ld, ", (long long)pow(EVICTION_AGE_LOG_BASE, i),
+            (long)cache->log_eviction_age_cnt[i]);
+  }
+  fprintf(ofile, "\n");
+
+  fclose(ofile);
+  return true;
+}
+
+/**
+ * @brief dump the age distribution of cached objects to a file
+ *
+ * WARNNING: this function obtain the age via evicting the cached objects
+ * so the cache state will change after calling this function
+ *
+ * @param cache
+ * @param req used to provide the current time
+ * @param ofilepath
+ * @return true
+ * @return false
+ */
+bool dump_cached_obj_age(cache_t *cache, const request_t *req,
+                         const char *ofilepath) {
+  FILE *ofile = fopen(ofilepath, "a");
+  if (ofile == NULL) {
+    perror("fopen failed");
+    return false;
+  }
+
+  /* clear/reset eviction age counters */
+  for (int i = 0; i < EVICTION_AGE_ARRAY_SZE; i++) {
+    cache->log_eviction_age_cnt[i] = 0;
+  }
+
+  int64_t n_cached_obj = cache->get_n_obj(cache);
+  int64_t n_evicted_obj = 0;
+  /* evict all the objects */
+  while (cache->get_occupied_byte(cache) > 0) {
+    cache->evict(cache, req);
+    n_evicted_obj++;
+  }
+  assert(n_cached_obj == n_evicted_obj);
+
+  int64_t n_ages = 0;
+  /* dump the cached objects' ages */
+  fprintf(ofile, "%s, cached_obj age, cache size: %lu, ", cache->cache_name,
+          (unsigned long)cache->cache_size);
+  for (int i = 0; i < EVICTION_AGE_ARRAY_SZE; i++) {
+    if (cache->log_eviction_age_cnt[i] == 0) {
+      continue;
+    }
+    n_ages += cache->log_eviction_age_cnt[i];
+    fprintf(ofile, "%lld:%ld, ", (long long)pow(EVICTION_AGE_LOG_BASE, i),
+            (long)cache->log_eviction_age_cnt[i]);
+  }
+  fprintf(ofile, "\n");
+  assert(n_ages == n_cached_obj);
+
+  fclose(ofile);
+  return true;
 }

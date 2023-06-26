@@ -9,17 +9,18 @@
 #ifndef profilerLRU_h
 #define profilerLRU_h
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-#include "const.h"
-#include "dist.h"
-#include "reader.h"
 #include <glib.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+
+#include "const.h"
+#include "dist.h"
+#include "reader.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 double *get_lru_obj_miss_ratio(reader_t *reader, gint64 size);
 double *get_lru_obj_miss_ratio_curve(reader_t *reader, gint64 size);

@@ -4,5 +4,10 @@
 *.bak
 *.clean
 *.nogit*
-_build
+*_build*
+build
 .idea
+example/cacheSimulatorC/cmake-build-debug
+.vscode/*
+*.log
+fig/

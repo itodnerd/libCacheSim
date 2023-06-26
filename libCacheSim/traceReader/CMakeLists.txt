@@ -1,7 +1,19 @@
-aux_source_directory(. DIR_LIB_SRCS)
-aux_source_directory(customizedReader DIR_LIB_SRCS2)
-add_library (traceReader ${DIR_LIB_SRCS} ${DIR_LIB_SRCS2})
 
-#file(GLOB src *.c)
-#add_library (traceReader ${src})
-#set(LIB_SOURCE ${LIB_SOURCE} ${src} PARENT_SCOPE)
+set(source 
+    generalReader/binary.c 
+    generalReader/csv.c 
+    generalReader/txt.c 
+    generalReader/libcsv.c
+    generalReader/lcs.c
+    reader.c
+    sampling/spatial.c
+    sampling/temporal.c
+    )
+
+if (SUPPORT_ZSTD_TRACE)
+    set(source ${source} generalReader/zstdReader.c)
+endif (SUPPORT_ZSTD_TRACE)
+
+add_library(traceReader ${source})
+
+

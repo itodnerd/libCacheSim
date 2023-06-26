@@ -1,69 +1,70 @@
-//
-// Created by Juncheng Yang on 4/18/20.
-//
+/*
+ * format
+ *
+ * struct {
+ *  int32_t real_time;
+ *  int64_t obj_id;
+ *  int32_t key_size:10;
+ *  int32_t value_size:22;
+ *  int32_t op:8;
+ *  int32_t ttl:24;
+ *
+ *  }
+ *
+ */
 
-#ifndef libCacheSim_TWRBINREADER_H
-#define libCacheSim_TWRBINREADER_H
+#pragma once
+
+#include "../../include/libCacheSim/reader.h"
+#include "binaryUtils.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#include "../../include/libCacheSim.h"
-
-
 static inline int twrReader_setup(reader_t *reader) {
   reader->trace_type = TWR_TRACE;
+  reader->trace_format = BINARY_TRACE_FORMAT;
   reader->item_size = 20;
-
-  if (reader->file_size % reader->item_size != 0) {
-    WARNING("trace file size %lu is not multiple of record size %lu\n",
-            (unsigned long) reader->file_size,
-            (unsigned long) reader->item_size);
-  }
-
-  reader->n_total_req = (guint64) reader->file_size / (reader->item_size);
+  reader->n_total_req = (uint64_t)reader->file_size / (reader->item_size);
+  reader->obj_id_is_num = true;
   return 0;
 }
 
-static inline int twr_read_one_req(reader_t *reader, request_t *req) {
-  if (reader->mmap_offset >= reader->file_size) {
+static int twr_read_one_req(reader_t *reader, request_t *req) {
+  char *record = read_bytes(reader);
+
+  if (record == NULL) {
     req->valid = FALSE;
     return 1;
   }
 
-  char *record = (reader->mapped_file + reader->mmap_offset);
-  req->real_time = *(uint32_t *) record;
-  record += 4;
-
-  req->obj_id_int = *(uint64_t *) record;
-  record += 8;
-
-  uint32_t kv_size = *(uint32_t *) record;
-  record += 4;
-  uint32_t op_ttl = *(uint32_t *) record;
+  req->clock_time = *(uint32_t *)record;
+  req->obj_id = *(uint64_t *)(record + 4);
+  uint32_t kv_size = *(uint32_t *)(record + 12);
+  uint32_t op_ttl = *(uint32_t *)(record + 16);
 
   uint32_t key_size = (kv_size >> 22) & (0x00000400 - 1);
   uint32_t val_size = kv_size & (0x00400000 - 1);
 
-  uint32_t op = (op_ttl >> 24) & (0x00000100 - 1);
+  uint32_t op = ((op_ttl >> 24) & (0x00000100 - 1));
   uint32_t ttl = op_ttl & (0x01000000 - 1);
 
+  req->key_size = key_size;
+  req->val_size = val_size;
   req->obj_size = key_size + val_size;
-  req->op = op;
-#ifdef SUPPORT_TTL
-  req->ttl = ttl;
-#endif
-  
-  reader->mmap_offset += 20;
-  if (req->obj_size == 0)
+  req->op = (req_op_e)(op);
+  req->ttl = (int32_t)ttl;
+
+  if (req->val_size == 0 && reader->ignore_size_zero_req &&
+      (req->op == OP_GET || req->op == OP_GETS) &&
+      reader->read_direction == READ_FORWARD) {
     return twr_read_one_req(reader, req);
+  }
+
   return 0;
 }
-
 
 #ifdef __cplusplus
 }
 #endif
-
-#endif //libCacheSim_TWRBINREADER_H

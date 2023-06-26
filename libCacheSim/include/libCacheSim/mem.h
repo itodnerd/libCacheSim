@@ -5,10 +5,6 @@
 #ifndef libCacheSim_MEM_H
 #define libCacheSim_MEM_H
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include "../config.h"
 
 #if HEAP_ALLOCTOR == HEAP_ALLOCATOR_G_NEW
@@ -32,13 +28,9 @@ extern "C" {
 #elif HEAP_ALLOCATOR == HEAP_ALLOCATOR_ALIGNED_MALLOC
 #include <stdlib.h>
 #define my_malloc(type) (type *)aligned_alloc(MEM_ALIGN_SIZE, sizeof(type));
-#define my_malloc_n(type, n)                                                   \
+#define my_malloc_n(type, n) \
   (type *)aligned_alloc(MEM_ALIGN_SIZE, sizeof(type) * n)
 #define my_free(size, addr) free(addr)
 #endif
 
-#ifdef __cplusplus
-}
-#endif
-
-#endif // libCacheSim_MEM_H
+#endif  // libCacheSim_MEM_H

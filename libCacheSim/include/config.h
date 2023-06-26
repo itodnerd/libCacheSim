@@ -12,14 +12,10 @@ extern "C" {
 //#pragma GCC optimize("Ofast")
 //#pragma GCC target("avx,avx2,fma")
 
-#include "libCacheSim/const.h"
+#include "libCacheSim/const.h"  // needed for hash type
 
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE /* for sched in utils.h */
-#endif
-
-#ifndef LOGLEVEL
-#define LOGLEVEL INFO_LEVEL
 #endif
 
 #ifndef HEAP_ALLOCATOR
@@ -31,6 +27,8 @@ extern "C" {
 //#define HASH_TYPE MURMUR3
 //#define HASH_TYPE WYHASH
 #define HASH_TYPE XXHASH3
+#else
+#error "HASH_TYPE is defined"
 #endif
 
 #ifndef HASHTABLE_TYPE
@@ -38,23 +36,29 @@ extern "C" {
 #endif
 
 #ifndef HASH_POWER_DEFAULT
-#define HASH_POWER_DEFAULT 24
+#define HASH_POWER_DEFAULT 23
 #endif
 
 #ifndef CHAINED_HASHTABLE_EXPAND_THRESHOLD
 #define CHAINED_HASHTABLE_EXPAND_THRESHOLD 1
 #endif
 
-
 #include <sys/mman.h>
-#ifdef MADV_HUGEPAGE
-#define USE_HUGEPAGE
-#else
+#ifndef MADV_HUGEPAGE
 #undef USE_HUGEPAGE
 #endif
 
-#define SUPPORT_TTL
-#define SUPPORT_SLAB_AUTOMOVE
+// #define TRACK_EVICTION_V_AGE
+// #define TRACK_DEMOTION
+// #define TRACK_CREATE_TIME
+
+#if defined(TRACK_EVICTION_V_AGE) || defined(TRACK_DEMOTION) || \
+    defined(TRACK_CREATE_TIME)
+#define CURR_TIME(cache, req) (cache->n_req)
+#elif defined(TRACK_EVICTION_R_AGE)
+#define CURR_TIME(cache, req) (req->clock_time)
+#endif
+
 
 #include <stdint.h>
 typedef uint64_t obj_id_t;
@@ -63,4 +67,4 @@ typedef uint64_t obj_id_t;
 }
 #endif
 
-#endif // libCacheSim_CONFIG_H
+#endif  // libCacheSim_CONFIG_H

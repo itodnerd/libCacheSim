@@ -1,30 +1,32 @@
 #ifndef LOGGING_H
 #define LOGGING_H
 
-#include "../config.h"
-#include "const.h"
-#include <execinfo.h>
 #include <pthread.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
 #include <unistd.h>
 
-static inline int _log_header(int level, const char *file, int line);
-static inline void print_stack_trace(void);
+#include "../config.h"
+#include "const.h"
 
-#define LOGGING(level, FMT, ...)                                               \
-  do {                                                                         \
-    log_lock(1);                                                               \
-    if (_log_header(level, __FILE__, __LINE__)) {                              \
-      printf(FMT, ##__VA_ARGS__);                                              \
-      printf("%s", NORMAL);                                                    \
-      fflush(stdout);                                                          \
-    }                                                                          \
-    log_lock(0);                                                               \
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+static inline void log_header(int level, const char *file, int line);
+void print_stack_trace(void);
+extern pthread_mutex_t log_mtx;
+
+#define LOGGING(level, FMT, ...)           \
+  do {                                     \
+    pthread_mutex_lock(&log_mtx);          \
+    log_header(level, __FILE__, __LINE__); \
+    printf(FMT, ##__VA_ARGS__);            \
+    printf("%s", NORMAL);                  \
+    fflush(stdout);                        \
+    pthread_mutex_unlock(&log_mtx);        \
   } while (0)
-
 
 #if LOGLEVEL <= VVVERBOSE_LEVEL
 #define VVVERBOSE(FMT, ...) LOGGING(VVVERBOSE_LEVEL, FMT, ##__VA_ARGS__)
@@ -56,60 +58,82 @@ static inline void print_stack_trace(void);
 #define INFO(FMT, ...)
 #endif
 
-#if LOGLEVEL <= WARNING_LEVEL
-#define WARNING(FMT, ...) LOGGING(WARNING_LEVEL, FMT, ##__VA_ARGS__)
+#if LOGLEVEL <= WARN_LEVEL
+#define WARN(FMT, ...) LOGGING(WARN_LEVEL, FMT, ##__VA_ARGS__)
 #else
-#define WARNING(FMT, ...)
+#define WARN(FMT, ...)
 #endif
 
 #if LOGLEVEL <= SEVERE_LEVEL
-#define ERROR(FMT, ...) LOGGING(SEVERE_LEVEL, FMT, ##__VA_ARGS__)
+#define ERROR(FMT, ...)                        \
+  {                                            \
+    LOGGING(SEVERE_LEVEL, FMT, ##__VA_ARGS__); \
+    abort();                                   \
+  }
 #else
 #define ERROR(FMT, ...)
 #endif
 
-static inline void log_lock(int lock) {
-  // static std::mutex m;
-  static pthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;
-  if (lock) {
-    pthread_mutex_lock(&mtx);
-    // m.lock();
-  } else {
-    pthread_mutex_unlock(&mtx);
-    // m.unlock();
-  }
-}
+#define WARN_ONCE(FMT, ...)      \
+  do {                           \
+    static bool printed = false; \
+    if (!printed) {              \
+      WARN(FMT, ##__VA_ARGS__);  \
+      printed = true;            \
+      fflush(stdout);            \
+    }                            \
+  } while (0)
 
-static inline int _log_header(int level, const char *file, int line) {
-  if (level < LOGLEVEL) {
-    return 0;
-  }
+#define DEBUG_ONCE(FMT, ...)     \
+  do {                           \
+    static bool printed = false; \
+    if (!printed) {              \
+      WARN(FMT, ##__VA_ARGS__);  \
+      printed = true;            \
+      fflush(stdout);            \
+    }                            \
+  } while (0)
+
+#define INFO_ONCE(FMT, ...)      \
+  do {                           \
+    static bool printed = false; \
+    if (!printed) {              \
+      WARN(FMT, ##__VA_ARGS__);  \
+      printed = true;            \
+      fflush(stdout);            \
+    }                            \
+  } while (0)
+
+static inline void log_header(int level, const char *file, int line) {
+  //  if (level < LOGLEVEL) {
+  //    return 0;
+  //  }
 
   switch (level) {
-  case VVVERBOSE_LEVEL:
-    printf("%s[VVV]     ", CYAN);
-    break;
-  case VVERBOSE_LEVEL:
-    printf("%s[VV]      ", CYAN);
-    break;
-  case VERBOSE_LEVEL:
-    printf("%s[VERBOSE] ", MAGENTA);
-    break;
-  case DEBUG_LEVEL:
-    printf("%s[DEBUG]   ", BLUE);
-    break;
-  case INFO_LEVEL:
-    printf("%s[INFO]    ", GREEN);
-    break;
-  case WARNING_LEVEL:
-    printf("%s[WARNING] ", YELLOW);
-    break;
-  case SEVERE_LEVEL:
-    printf("%s[ERROR]   ", RED);
-    break;
-  default:
-    printf("in logging should not be here\n");
-    break;
+    case VVVERBOSE_LEVEL:
+      printf("%s[VVV]   ", CYAN);
+      break;
+    case VVERBOSE_LEVEL:
+      printf("%s[VV]    ", CYAN);
+      break;
+    case VERBOSE_LEVEL:
+      printf("%s[VERB]  ", MAGENTA);
+      break;
+    case DEBUG_LEVEL:
+      printf("%s[DEBUG] ", CYAN);
+      break;
+    case INFO_LEVEL:
+      printf("%s[INFO]  ", GREEN);
+      break;
+    case WARN_LEVEL:
+      printf("%s[WARN]  ", YELLOW);
+      break;
+    case SEVERE_LEVEL:
+      printf("%s[ERROR] ", RED);
+      break;
+    default:
+      printf("in logging should not be here\n");
+      break;
   }
 
   char buffer[30];
@@ -120,24 +144,12 @@ static inline int _log_header(int level, const char *file, int line) {
   curtime = tv.tv_sec;
   strftime(buffer, 30, "%m-%d-%Y %T", localtime(&curtime));
 
-  printf("%s %16s:%-4d ", buffer, strrchr(file, '/') + 1, line);
+  printf("%s %8s:%-4d ", buffer, strrchr(file, '/') + 1, line);
   printf("(tid=%zu): ", (unsigned long)pthread_self());
-
-  return 1;
 }
 
-static inline void print_stack_trace(void) {
-
-  void *array[10];
-  size_t size;
-
-  // get void*'s for all entries on the stack
-  size = backtrace(array, 10);
-
-  // print out all the frames to stderr
-  fprintf(stderr, "stack trace: \n");
-  backtrace_symbols_fd(array, size, STDERR_FILENO);
-  exit(1);
+#ifdef __cplusplus
 }
+#endif
 
 #endif

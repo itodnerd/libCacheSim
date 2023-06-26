@@ -8,74 +8,86 @@
 #ifndef simulator_h
 #define simulator_h
 
+#include "cache.h"
+#include "reader.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#include "cache.h"
-#include "reader.h"
-
-typedef struct {
-  uint64_t req_cnt;
-  uint64_t req_bytes;
-  uint64_t miss_cnt;
-  uint64_t miss_bytes;
-  uint64_t cache_size;
-  cache_state_t cache_state;
-  void *other_data;
-} sim_res_t;
-
-typedef enum {
-  MISS_RATIO = 0,
-  EVICTION_AGE,
-  HIT_RESULT,
-  EVICTION,
-} sim_type_e;
-
 /**
  *
- * this function performs num_of_sizes simulations to obtain miss ratio,
- * the cache size of simulations are from cache_sizes,
- * it returns an array of simulator_res_t*, each element of the array is the
- result of one simulation
- * the user is responsible for g_free the memory of returned results
-
+ * this function performs num_of_sizes simulations each at one cache size,
+ * it returns an array of cache_stat_t*, each element is the result of one
+ * simulation the returned cache_stat_t should be freed by the user
+ *
+ * this also supports warmup using
+ *      a different trace by setting warmup_reader pointing to the trace
+ *              or
+ *      fraction of the requests from the reader
+ *              or
+ *      warmup_sec of requests from the reader
+ *
  * @param reader
  * @param cache
  * @param num_of_sizes
  * @param cache_sizes
  * @param warmup_reader
- * @param warmup_perc
+ * @param warmup_frac
  * @param num_of_threads
  * @return
  */
-sim_res_t *
-get_miss_ratio_curve(reader_t *const reader, const cache_t *const cache,
-                     const gint num_of_sizes, const guint64 *const cache_sizes,
-                     reader_t *const warmup_reader, const double warmup_perc,
-                     const gint num_of_threads);
+cache_stat_t *simulate_at_multi_sizes(reader_t *reader, const cache_t *cache,
+                                      int num_of_sizes,
+                                      const uint64_t *cache_sizes,
+                                      reader_t *warmup_reader,
+                                      double warmup_frac, int warmup_sec,
+                                      int num_of_threads);
 
 /**
  * this function performs cache_size/step_size simulations to obtain miss ratio,
  * the size of simulations are step_size, step_size*2 ... step_size*n,
- * it returns an array of simulator_res_t*, each element of the array is the
- * result of one simulation the user is responsible for g_free the memory of
- * returned results
+ * it returns an array of cache_stat_t*, each element of the array is the
+ * result of one simulation
+ * the returned cache_stat_t should be freed by the user
+ *
+ *  this also supports warmup using
+ *   a different trace by setting warmup_reader pointing to the trace
+ *           or
+ *   fraction of the requests in the given trace reader by setting warmup_frac
+ *
  * @param reader_in
  * @param cache_in
  * @param step_size
- * @param warmup_perc
+ * @param warmup_frac
  * @param num_of_threads
- * @return an array of simulator_res_t*, each element of the array is the result
- * of one simulation
+ * @return an array of cache_stat_t, each corresponds to one simulation
  */
 
-sim_res_t *get_miss_ratio_curve_with_step_size(reader_t *const reader_in,
-                                               const cache_t *const cache_in,
-                                               const guint64 step_size,
-                                               reader_t *const warmup_reader,
-                                               const double warmup_perc,
-                                               const gint num_of_threads);
+cache_stat_t *simulate_at_multi_sizes_with_step_size(
+    reader_t *reader_in, const cache_t *cache_in, uint64_t step_size,
+    reader_t *warmup_reader, double warmup_frac, int warmup_sec,
+    int num_of_threads);
+
+/**
+ * this function performs num_of_caches simulations with the caches,
+ * it returns a cache_stat_t
+ * the returned cache_stat_t should be freed by the user
+ * *
+ * @param reader
+ * @param caches
+ * @param num_of_caches
+ * @param warmup_reader
+ * @param warmup_frac
+ * @param num_of_threads
+ * @return
+ */
+cache_stat_t *simulate_with_multi_caches(reader_t *reader, cache_t *caches[],
+                                         int num_of_caches,
+                                         reader_t *warmup_reader,
+                                         double warmup_frac, int warmup_sec,
+                                         int num_of_threads, 
+                                         bool free_cache_when_finish);
 
 #ifdef __cplusplus
 }

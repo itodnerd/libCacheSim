@@ -6,17 +6,16 @@
 //  Copyright © 2016 Juncheng. All rights reserved.
 //
 
+#include "../dataStructure/splay.h"
 #include "../include/libCacheSim/profilerLRU.h"
-#include "../dataStructure/include/splay.h"
-#include "../utils/include/utilsInternal.h"
-#include "include/distInternal.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* I think this set of utilities are not used and will be deprecated in next
- * version */
+int64_t get_stack_dist_add_req(const request_t *req, sTree **splay_tree,
+                               GHashTable *hash_table, const int64_t curr_ts,
+                               int64_t *last_access_ts);
 
 guint64 *_get_lru_hit_cnt(reader_t *reader, gint64 size);
 
@@ -52,11 +51,10 @@ guint64 *_get_lru_miss_cnt(reader_t *reader, gint64 size) {
  * non-parallel version
  *
  * @param reader: reader for reading data
- * @param size: the max evictionAlgo size, if -1, then it uses the maximum size
+ * @param size: the max cache size, if -1, then it uses the maximum size
  */
 
 guint64 *_get_lru_hit_cnt(reader_t *reader, gint64 size) {
-
   guint64 ts = 0;
   gint64 stack_dist;
   guint64 *hit_count_array = g_new0(guint64, size + 1);
@@ -64,13 +62,12 @@ guint64 *_get_lru_hit_cnt(reader_t *reader, gint64 size) {
 
   // create hash table and splay tree
   GHashTable *hash_table =
-      create_hash_table(reader, NULL, NULL, (GDestroyNotify)g_free, NULL);
+      g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, NULL);
   sTree *splay_tree = NULL;
 
   read_one_req(reader, req);
   while (req->valid) {
-    splay_tree =
-        get_stack_dist_add_req(req, splay_tree, hash_table, ts, &stack_dist);
+    stack_dist = get_stack_dist_add_req(req, &splay_tree, hash_table, ts, NULL);
 
     if (stack_dist == -1)
       // cold miss

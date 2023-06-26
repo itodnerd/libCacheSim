@@ -103,10 +103,9 @@ extern "C"
         }
         else if (funcPtr == read_one_element_above){
             reader_set_read_pos(reader, 1.0);
-            if (go_back_one_line(reader)!=0)
+            if (go_back_one_req(reader)!=0)
                 ERROR("error when going back one line\n");
             read_one_element(reader, req);
-            set_no_eof(reader);
         }
         else{
             ERROR("unknown function pointer received in heatmap\n");
@@ -234,13 +233,13 @@ extern "C"
 
 
         if (break_points->len > 10000){
-            WARNING("number of pixels in one dimension is larger than 10000, "
+            WARN("number of pixels in one dimension is larger than 10000, "
                     "exact size: %d, it may take a very long time, if you didn't "
                     "intend to do it, please try with a larger time stamp\n",
                     break_points->len);
         }
         else if (break_points->len < 20){
-            WARNING("number of pixels in one dimension is smaller than 20, "
+            WARN("number of pixels in one dimension is smaller than 20, "
                     "exact size: %d, each pixel will be very large, if you didn't "
                     "intend to do this, please try with a smaller time stamp\n",
                     break_points->len);
@@ -280,7 +279,7 @@ extern "C"
             binary_params_t* params = reader->reader_params;
             if (params->real_time_pos == 0){
                 ERROR("get_bp_rtime needs you to provide "
-                      "real_time parameter for binary reader\n");
+                      "clock_time parameter for binary reader\n");
                 exit(1);
             }
         }
@@ -311,7 +310,7 @@ extern "C"
 
         reset_reader(reader);
         read_one_element(reader, req);
-        previous_time = req->real_time;
+        previous_time = req->clock_time;
         g_array_append_val(break_points, num);
 
 
@@ -319,16 +318,16 @@ extern "C"
         if (num_of_piexls != -1 && time_interval == -1){
             reader_set_read_pos(reader, 1);
             read_one_element_above(reader, req);
-            time_interval = (gint64) ceil( (double)(req->real_time - previous_time) /num_of_piexls + 1);
+            time_interval = (gint64) ceil( (double)(req->clock_time - previous_time) /num_of_piexls + 1);
             reader_set_read_pos(reader, 0);
             read_one_element(reader, req);
         }
 
 
         while (req->valid){
-            if (req->real_time - previous_time > (guint64)time_interval){
+            if (req->clock_time - previous_time > (guint64)time_interval){
                 g_array_append_val(break_points, num);
-                previous_time = req->real_time;
+                previous_time = req->clock_time;
             }
             read_one_element(reader, req);
             num++;
@@ -338,13 +337,13 @@ extern "C"
 
 
         if (break_points->len > 10000){
-            WARNING("number of pixels in one dimension is larger than 10000, "
+            WARN("number of pixels in one dimension is larger than 10000, "
                     "exact size: %d, it may take a very long time, if you didn't "
                     "intend to do it, please try with a larger time stamp\n",
                     break_points->len);
         }
         else if (break_points->len < 20){
-            WARNING("number of pixels in one dimension is smaller than 20, "
+            WARN("number of pixels in one dimension is smaller than 20, "
                     "exact size: %d, each pixel will be very large, if you didn't "
                     "intend to do this, please try with a smaller time stamp\n",
                     break_points->len);
