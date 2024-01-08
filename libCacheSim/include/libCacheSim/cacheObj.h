@@ -63,6 +63,11 @@ typedef struct {
   void *pq_node;
 } Hyperbolic_obj_metadata_t;
 
+typedef struct {
+  int64_t accesses[8];
+  int16_t last_pos;
+} WATT_obj_metadata_t;
+
 typedef struct Belady_obj_metadata {
   void *pq_node;
   int64_t next_access_vtime;
@@ -161,6 +166,7 @@ typedef struct cache_obj {
     SR_LRU_obj_metadata_t SR_LRU;
     CR_LFU_obj_metadata_t CR_LFU;
     Hyperbolic_obj_metadata_t hyperbolic;
+    WATT_obj_metadata_t WATT;
     RandomTwo_obj_metadata_t RandomTwo;
     Belady_obj_metadata_t Belady;
     FIFO_Merge_obj_metadata_t FIFO_Merge;

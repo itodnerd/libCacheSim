@@ -59,6 +59,9 @@ static inline cache_t *create_cache(const char *trace_path,
   } else if (strcasecmp(eviction_algo, "hyperbolic") == 0) {
     cc_params.hashpower = MAX(cc_params.hashpower - 8, 16);
     cache = Hyperbolic_init(cc_params, eviction_params);
+  } else if (strcasecmp(eviction_algo, "watt") == 0) {
+    //cc_params.hashpower = MAX(cc_params.hashpower - 8, 16);
+    cache = WATT_init(cc_params, eviction_params);
   } else if (strcasecmp(eviction_algo, "lecar") == 0) {
     cache = LeCaR_init(cc_params, eviction_params);
   } else if (strcasecmp(eviction_algo, "lecarv0") == 0) {

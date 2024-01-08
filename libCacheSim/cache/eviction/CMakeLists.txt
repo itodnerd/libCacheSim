@@ -15,6 +15,7 @@ set(sourceC
         Belady.c
         BeladySize.c
         Hyperbolic.c
+        WATT.c
         LeCaR.c
         Cacheus.c
         TwoQ.c
