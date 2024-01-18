@@ -8,6 +8,8 @@ extern "C" {
 
 typedef struct WATT_params {
   int n_sample;
+  int epoch;
+  int evicts_in_epoch;
 } WATT_params_t;
 
 // ***********************************************************************
@@ -57,6 +59,8 @@ cache_t *WATT_init(const common_cache_params_t ccache_params,
 
   WATT_params_t *params = my_malloc(WATT_params_t);
   params->n_sample = 64;
+  params->epoch=0;
+  params->evicts_in_epoch=0;
   cache->eviction_params = params;
 
   if (cache_specific_params != NULL) {
@@ -128,11 +132,14 @@ static cache_obj_t *WATT_find(cache_t *cache, const request_t *req,
   cache_obj_t *cache_obj = cache_find_base(cache, req, update_cache);
 
   if (update_cache && cache_obj) {
-    int64_t curr_time = cache->n_req;
-
-    int64_t next_pos = (cache_obj->WATT.last_pos +1) %8;
-    cache_obj->WATT.accesses[next_pos] = curr_time;
-    cache_obj->WATT.last_pos = next_pos;
+    WATT_params_t* params = cache->eviction_params;
+    int64_t curr_time = params->epoch;
+    int64_t curr_pos = cache_obj->WATT.last_pos;
+    if (cache_obj->WATT.accesses[curr_pos] != curr_time){
+      int64_t next_pos = (curr_pos +1) %8;
+      cache_obj->WATT.accesses[next_pos] = curr_time;
+      cache_obj->WATT.last_pos = next_pos;
+    }
   }
 
   return cache_obj;
@@ -151,7 +158,8 @@ static cache_obj_t *WATT_find(cache_t *cache, const request_t *req,
 static cache_obj_t *WATT_insert(cache_t *cache, const request_t *req) {
   cache_obj_t *cached_obj = cache_insert_base(cache, req);
   cached_obj->WATT.last_pos = 0;
-  int64_t curr_time = cache->n_req;
+  WATT_params_t* params = cache->eviction_params;
+  int64_t curr_time = params->epoch;
   cached_obj->WATT.accesses[0] = curr_time;
   cached_obj->WATT.accesses[1] = curr_time-3000000;
   cached_obj->WATT.accesses[2] = curr_time-3000000;
@@ -176,15 +184,14 @@ static cache_obj_t *WATT_insert(cache_t *cache, const request_t *req) {
  */
 static cache_obj_t *WATT_to_evict(cache_t *cache, const request_t *req) {
   WATT_params_t *params = cache->eviction_params;
-  int64_t curr_time = cache->n_req;
-
+  int64_t curr_time = params->epoch;
   cache_obj_t *best_candidate = NULL, *sampled_obj;
   double worst_candidate_score = 1.0e16, sampled_obj_score;
   for (int i = 0; i < params->n_sample; i++) {
     sampled_obj = hashtable_rand_obj(cache->hashtable);
-    double sampled_obj_score = 0.2/ (curr_time - sampled_obj->WATT.accesses[sampled_obj->WATT.last_pos]);
+    double sampled_obj_score = 0.2/ (1+curr_time - sampled_obj->WATT.accesses[sampled_obj->WATT.last_pos]);
     for (int i =1; i<8; i++){
-      double new_value = 1.0*(i+1) / (curr_time - sampled_obj->WATT.accesses[(sampled_obj->WATT.last_pos +8 -i) %8]);
+      double new_value = 1.0*(i+1) / (1+curr_time - sampled_obj->WATT.accesses[(sampled_obj->WATT.last_pos +8 -i) %8]);
       if (new_value > sampled_obj_score){
         sampled_obj_score = new_value;
       }
@@ -223,6 +230,13 @@ static void WATT_evict(cache_t *cache,
   if (obj_to_evict == NULL) {
     DEBUG_ASSERT(cache->n_obj == 0);
     WARN("no object can be evicted\n");
+  }
+
+  WATT_params_t *params = cache->eviction_params;
+  params->evicts_in_epoch++;
+  if (params->evicts_in_epoch >= cache->get_n_obj(cache)/8){
+    params->epoch++;
+    params->evicts_in_epoch=0;
   }
 
   cache_evict_base(cache, obj_to_evict, true);
